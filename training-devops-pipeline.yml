@@ -1,0 +1,149 @@
+resources:
+  containers:
+  - container: mlops
+    image: mcr.microsoft.com/mlops/python:latest
+
+pr: none
+trigger:
+  branches:
+    include:
+    - main
+
+variables:
+- group: xmmdevops-variable-group-non-prod
+- group: xmmdevops-variable-group-qa
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: 'BuildPipeline'
+  variables:
+  - group: xmmdevops-variable-group-non-prod
+  displayName: 'BuildPipeline'
+  jobs:
+  - job: "BuildPipeline"
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.8'
+          addToPath: true
+      - script: |
+          python -m pip install --upgrade pip
+          pip install jupyter
+          pip install nbconvert
+          pip install --upgrade azureml-core
+          pip install --upgrade azureml-sdk[automl]
+      - task: AzureCLI@1
+        env:
+          tenantId: $(tenantId)
+          servicePrincipalId: $(servicePrincipalId)
+          servicePrincipalPassword: $(servicePrincipalPassword)
+          wsName: $(wsName)
+          subscriptionId: $(subscriptionId)
+          resourceGroup: $(resourceGroup)
+        inputs:
+          azureSubscription: aml-workspace-connection
+          scriptLocation: inlineScript
+          workingDirectory: $(Build.SourcesDirectory)
+          inlineScript: |
+            set -e # fail on error
+            jupyter nbconvert --TagRemovePreprocessor.enabled=True --TagRemovePreprocessor.remove_cell_tags="['magic_cells']" --TemplateExporter.exclude_markdown=True --to script MLOpsSample.ipynb
+        displayName: 'NB Convert'
+        
+      - task: AzureCLI@1
+        env:
+          config: $(config)
+          tenantId: $(tenantId)
+          servicePrincipalId: $(servicePrincipalId)
+          servicePrincipalPassword: $(servicePrincipalPassword)
+          wsName: $(wsName)
+          subscriptionId: $(subscriptionId)
+          resourceGroup: $(resourceGroup)
+        inputs:
+          azureSubscription: aml-workspace-connection
+          scriptLocation: inlineScript
+          workingDirectory: $(Build.SourcesDirectory)
+          inlineScript: |
+            set -e # fail on error
+            export SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+            # Invoke the Python building and publishing a training pipeline
+            python -m MLOpsSample
+        displayName: 'Run Azure Machine Learning Pipeline'
+
+
+      - task: Bash@3
+        inputs:
+          workingDirectory: $(Build.SourcesDirectory)
+          targetType: 'inline'
+          script: |
+            echo "##vso[task.setvariable variable=deployme;isOutput=true]$(cat ./run_outputs/deploy.txt)"
+            echo "file output:"
+            echo "$(cat ./run_outputs/deploy.txt)"
+        displayName: 'Setting Deploy Status'
+        name: 'setoutput'
+            
+      - task: Bash@3
+        #not used, but could be useful to have in future
+        inputs:
+          workingDirectory: $(Build.SourcesDirectory)
+          targetType: 'inline'
+          script: |
+            echo 'deploy output'
+            echo $(setoutput.deployme)
+            
+      - task: CopyFiles@2
+        inputs:
+          sourceFolder: '$(Build.SourcesDirectory)'
+          contents: '**/run_outputs/*' 
+          targetFolder: '$(Build.ArtifactStagingDirectory)' 
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Artifact: drop'
+        inputs:
+          ArtifactName: 'drop'
+          publishLocation: 'Container'
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+
+        
+- stage: 'RegisterQA'
+  dependsOn: 'BuildPipeline'
+  variables:
+  - group: xmmdevops-variable-group-qa
+  displayName: 'Register Model QA'
+  jobs:
+  - job: "RegisterQA"
+    steps:
+      - download: current
+        artifact: drop
+      - task: PowerShell@2
+        inputs:
+          targetType: 'inline'
+          script: |
+            $fileExists = Test-Path -Path "$(Pipeline.Workspace)/drop/run_outputs/model.yml"
+            Write-Output "##vso[task.setvariable variable=FileExists]$fileExists"
+      - task: AzureCLI@1
+        condition: eq(variables['FileExists'], True)
+        env:
+          tenantId: $(tenantId)
+          servicePrincipalId: $(servicePrincipalId)
+          servicePrincipalPassword: $(servicePrincipalPassword)
+          wsName: $(wsName)
+          subscriptionId: $(subscriptionId)
+          resourceGroup: $(resourceGroup)
+          location: $(location)
+        inputs:
+          azureSubscription: qa-aml-workspace-connection
+          scriptLocation: inlineScript
+          workingDirectory: '$(Build.SourcesDirectory)'
+          inlineScript: |
+            echo "files:"
+            ls
+            echo "drop files"
+            ls '$(Pipeline.Workspace)/drop/'
+            az version
+            az extension add -n ml -y
+            az configure --defaults group=$(resourceGroup) workspace=$(wsName) location=$(location)
+            az ml model create --file '$(Pipeline.Workspace)/drop/run_outputs/model.yml' --resource-group $(resourceGroup) --workspace-name $(wsName)
+        displayName: 'QA Register Model'
+        
