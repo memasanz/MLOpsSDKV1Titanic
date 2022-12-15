@@ -53,7 +53,6 @@ stages:
         
       - task: AzureCLI@1
         env:
-          config: $(config)
           tenantId: $(tenantId)
           servicePrincipalId: $(servicePrincipalId)
           servicePrincipalPassword: $(servicePrincipalPassword)
