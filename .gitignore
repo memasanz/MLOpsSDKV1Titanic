@@ -1,0 +1,10 @@
+.amlignore
+.amlignore.amltmp
+.ipynb_aml_checkpoints
+*/.ipynb_aml_checkpoints
+.ipynb_aml_checkpoints
+.ipynb_aml_checkpoints/*
+*/.ipynb_aml_checkpoints
+.ipynb_aml_checkpoints/*
+*.amltmp
+.ipynb_checkpoints/
